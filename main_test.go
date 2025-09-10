@@ -65,18 +65,31 @@ func TestMainHTTPHandlers(t *testing.T) {
 		w.Write([]byte(html))
 	})
 
-	// SSE handler from main.go
+	// SSE handler from main.go (updated to support multi-topic)
 	mux.HandleFunc("/subscribe", func(w http.ResponseWriter, r *http.Request) {
-		topicStr := r.URL.Query().Get("topic")
-		if topicStr == "" {
-			http.Error(w, "topic parameter is required", http.StatusBadRequest)
+		// Get topics parameter (supports both single and comma-separated multiple topics)
+		topicsParam := r.URL.Query().Get("topics")
+		if topicsParam == "" {
+			http.Error(w, "topics parameter is required", http.StatusBadRequest)
 			return
 		}
 
-		// Validate UUID
-		if _, err := uuid.Parse(topicStr); err != nil {
-			http.Error(w, "invalid UUID format", http.StatusBadRequest)
-			return
+		// Parse comma-separated topics
+		topics := strings.Split(topicsParam, ",")
+		for i, topic := range topics {
+			topics[i] = strings.TrimSpace(topic)
+		}
+
+		// Validate all UUIDs
+		for _, topic := range topics {
+			if topic == "" {
+				http.Error(w, "empty topic not allowed", http.StatusBadRequest)
+				return
+			}
+			if _, err := uuid.Parse(topic); err != nil {
+				http.Error(w, fmt.Sprintf("invalid UUID format: %s", topic), http.StatusBadRequest)
+				return
+			}
 		}
 
 		// Set headers for SSE
@@ -85,27 +98,53 @@ func TestMainHTTPHandlers(t *testing.T) {
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		// Subscribe to messages
-		messageCh := broker.Subscribe(topicStr)
-		defer broker.Unsubscribe(topicStr, messageCh)
+		// Subscribe to all topics
+		messageChannels := make([]chan string, len(topics))
+		for i, topic := range topics {
+			messageChannels[i] = broker.Subscribe(topic)
+		}
+
+		// Cleanup function
+		defer func() {
+			for i, topic := range topics {
+				broker.Unsubscribe(topic, messageChannels[i])
+			}
+		}()
 
 		// Get context from request for client disconnect
 		ctx := r.Context()
 
-		// Send messages to client (with timeout for test)
+		// For tests, we'll use a simple approach with timeout
 		timeout := time.After(100 * time.Millisecond)
+
 		for {
 			select {
-			case msg := <-messageCh:
-				fmt.Fprintf(w, "data: %s\n\n", msg)
-				if f, ok := w.(http.Flusher); ok {
-					f.Flush()
-				}
-				return // Exit after first message for test
 			case <-ctx.Done():
 				return
 			case <-timeout:
 				return // Exit after timeout for test
+			default:
+				// Check all channels for messages
+				for i, ch := range messageChannels {
+					select {
+					case msg := <-ch:
+						if len(topics) == 1 {
+							// Single topic: maintain backwards compatibility
+							fmt.Fprintf(w, "data: %s\n\n", msg)
+						} else {
+							// Multiple topics: include topic info in JSON format
+							fmt.Fprintf(w, "data: {\"topic\":\"%s\",\"message\":\"%s\"}\n\n", topics[i], msg)
+						}
+						if f, ok := w.(http.Flusher); ok {
+							f.Flush()
+						}
+						return // Exit after first message for test
+					default:
+						// No message on this channel, continue
+					}
+				}
+				// Small sleep to prevent busy waiting
+				time.Sleep(10 * time.Millisecond)
 			}
 		}
 	})
@@ -144,7 +183,7 @@ func TestMainHTTPHandlers(t *testing.T) {
 	t.Run("SSEValidUUID", func(t *testing.T) {
 		testUUID := uuid.New().String()
 
-		resp, err := http.Get(server.URL + "/subscribe?topic=" + testUUID)
+		resp, err := http.Get(server.URL + "/subscribe?topics=" + testUUID)
 		if err != nil {
 			t.Fatalf("Failed to connect to SSE endpoint: %v", err)
 		}
@@ -188,8 +227,8 @@ func TestMainHTTPHandlers(t *testing.T) {
 		}
 	})
 
-	// Test SSE endpoint without topic parameter
-	t.Run("SSEMissingTopic", func(t *testing.T) {
+	// Test SSE endpoint without topics parameter
+	t.Run("SSEMissingTopics", func(t *testing.T) {
 		resp, err := http.Get(server.URL + "/subscribe")
 		if err != nil {
 			t.Fatalf("Failed to make request: %v", err)
@@ -211,6 +250,54 @@ func TestMainHTTPHandlers(t *testing.T) {
 
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("Expected status 404, got %d", resp.StatusCode)
+		}
+	})
+
+	// Test multi-topic SSE endpoint
+	t.Run("SSEMultipleTopics", func(t *testing.T) {
+		uuid1 := uuid.New().String()
+		uuid2 := uuid.New().String()
+		topicsParam := uuid1 + "," + uuid2
+
+		resp, err := http.Get(server.URL + "/subscribe?topics=" + topicsParam)
+		if err != nil {
+			t.Fatalf("Failed to connect to multi-topic SSE endpoint: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		}
+
+		contentType := resp.Header.Get("Content-Type")
+		if contentType != "text/event-stream" {
+			t.Errorf("Expected Content-Type 'text/event-stream', got '%s'", contentType)
+		}
+	})
+
+	// Test multi-topic with invalid UUID
+	t.Run("SSEMultipleTopicsInvalidUUID", func(t *testing.T) {
+		resp, err := http.Get(server.URL + "/subscribe?topics=valid-uuid,invalid-uuid")
+		if err != nil {
+			t.Fatalf("Failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("Expected status 400, got %d", resp.StatusCode)
+		}
+	})
+
+	// Test empty topics parameter
+	t.Run("SSEEmptyTopics", func(t *testing.T) {
+		resp, err := http.Get(server.URL + "/subscribe?topics=")
+		if err != nil {
+			t.Fatalf("Failed to make request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("Expected status 400, got %d", resp.StatusCode)
 		}
 	})
 }
@@ -567,4 +654,250 @@ func TestServerCreation(t *testing.T) {
 	if server.server.Addr != config.ServerAddress {
 		t.Errorf("Expected server address '%s', got '%s'", config.ServerAddress, server.server.Addr)
 	}
+}
+
+// Test multi-topic notification flow
+func TestMultiTopicNotificationFlow(t *testing.T) {
+	connStr := "postgres://postgres:postgres@localhost/postgres?sslmode=disable"
+
+	// Setup database connections
+	notifierDB, err := sql.Open("postgres", connStr)
+	if err != nil {
+		t.Skipf("Skipping test: cannot connect to database: %v", err)
+	}
+	defer notifierDB.Close()
+
+	if err = notifierDB.Ping(); err != nil {
+		t.Skipf("Skipping test: database not available: %v", err)
+	}
+
+	listener := pq.NewListener(connStr, 10*time.Second, time.Minute, func(ev pq.ListenerEventType, err error) {
+		if err != nil {
+			t.Logf("Listener event: %v, error: %v", ev, err)
+		}
+	})
+	defer listener.Close()
+
+	// Create broker exactly as main.go does
+	broker := NewBroker(notifierDB, listener)
+
+	// Start notification processor exactly as main.go does
+	go func() {
+		for notification := range listener.Notify {
+			broker.listenerCh <- notification
+		}
+	}()
+
+	go broker.ListenForNotifications()
+
+	// Set up SSE handler for multi-topic testing
+	mux := http.NewServeMux()
+	mux.HandleFunc("/subscribe", func(w http.ResponseWriter, r *http.Request) {
+		// Use the same logic as the updated server.go
+		topicsParam := r.URL.Query().Get("topics")
+		if topicsParam == "" {
+			http.Error(w, "topics parameter is required", http.StatusBadRequest)
+			return
+		}
+
+		// Parse comma-separated topics
+		topics := strings.Split(topicsParam, ",")
+		for i, topic := range topics {
+			topics[i] = strings.TrimSpace(topic)
+		}
+
+		// Validate all UUIDs
+		for _, topic := range topics {
+			if topic == "" {
+				http.Error(w, "empty topic not allowed", http.StatusBadRequest)
+				return
+			}
+			if _, err := uuid.Parse(topic); err != nil {
+				http.Error(w, fmt.Sprintf("invalid UUID format: %s", topic), http.StatusBadRequest)
+				return
+			}
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		// Subscribe to all topics
+		messageChannels := make([]chan string, len(topics))
+		for i, topic := range topics {
+			messageChannels[i] = broker.Subscribe(topic)
+		}
+
+		defer func() {
+			for i, topic := range topics {
+				broker.Unsubscribe(topic, messageChannels[i])
+			}
+		}()
+
+		ctx := r.Context()
+
+		// Send initial connection confirmation
+		fmt.Fprintf(w, "data: connected\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+
+		// Create multiplexed channel
+		multiplexCh := make(chan struct {
+			topic   string
+			message string
+		}, 100)
+
+		// Start goroutines to forward messages
+		for i, ch := range messageChannels {
+			go func(topicName string, messageCh chan string) {
+				for msg := range messageCh {
+					select {
+					case multiplexCh <- struct {
+						topic   string
+						message string
+					}{topicName, msg}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}(topics[i], ch)
+		}
+
+		for {
+			select {
+			case msgData := <-multiplexCh:
+				// Always include topic info in JSON format
+				fmt.Fprintf(w, "data: {\"topic\":\"%s\",\"message\":\"%s\"}\n\n", msgData.topic, msgData.message)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				return // Exit after first message for test
+			case <-ctx.Done():
+				return
+			}
+		}
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Test multiple topics
+	t.Run("MultipleTopicsNotification", func(t *testing.T) {
+		topic1 := uuid.New().String()
+		topic2 := uuid.New().String()
+		topicsParam := topic1 + "," + topic2
+
+		// Create SSE client
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", server.URL+"/subscribe?topics="+topicsParam, nil)
+		if err != nil {
+			t.Fatalf("Failed to create request: %v", err)
+		}
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Failed to connect to SSE: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d", resp.StatusCode)
+		}
+
+		// Read the initial connection message
+		buffer := make([]byte, 1024)
+		n, err := resp.Body.Read(buffer)
+		if err != nil {
+			t.Fatalf("Failed to read initial message: %v", err)
+		}
+
+		initialMsg := string(buffer[:n])
+		if !strings.Contains(initialMsg, "data: connected") {
+			t.Errorf("Expected initial connection message, got: %s", initialMsg)
+		}
+
+		// Send notification to topic1
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			sqlStmt := fmt.Sprintf(`NOTIFY "%s", 'test message from topic1'`, topic1)
+			_, err := notifierDB.Exec(sqlStmt)
+			if err != nil {
+				t.Errorf("Failed to send notification: %v", err)
+			}
+		}()
+
+		// Read the notification message
+		n, err = resp.Body.Read(buffer)
+		if err != nil {
+			t.Fatalf("Failed to read notification message: %v", err)
+		}
+
+		notificationMsg := string(buffer[:n])
+		if !strings.Contains(notificationMsg, fmt.Sprintf(`"topic":"%s"`, topic1)) {
+			t.Errorf("Expected topic info in multi-topic notification, got: %s", notificationMsg)
+		}
+		if !strings.Contains(notificationMsg, `"message":"yo"`) {
+			t.Errorf("Expected message content in notification, got: %s", notificationMsg)
+		}
+	})
+
+	// Test backwards compatibility with single topic
+	t.Run("SingleTopicJSONFormat", func(t *testing.T) {
+		topic := uuid.New().String()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", server.URL+"/subscribe?topics="+topic, nil)
+		if err != nil {
+			t.Fatalf("Failed to create request: %v", err)
+		}
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Failed to connect to SSE: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d", resp.StatusCode)
+		}
+
+		// Read initial message
+		buffer := make([]byte, 1024)
+		n, err := resp.Body.Read(buffer)
+		if err != nil {
+			t.Fatalf("Failed to read initial message: %v", err)
+		}
+
+		// Send notification
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			sqlStmt := fmt.Sprintf(`NOTIFY "%s", 'test message'`, topic)
+			_, err := notifierDB.Exec(sqlStmt)
+			if err != nil {
+				t.Errorf("Failed to send notification: %v", err)
+			}
+		}()
+
+		// Read notification - should be JSON format even for single topic
+		n, err = resp.Body.Read(buffer)
+		if err != nil {
+			t.Fatalf("Failed to read notification message: %v", err)
+		}
+
+		notificationMsg := string(buffer[:n])
+		if !strings.Contains(notificationMsg, `"topic":`) {
+			t.Errorf("Expected JSON format for single topic, got: %s", notificationMsg)
+		}
+		if !strings.Contains(notificationMsg, `"message":"yo"`) {
+			t.Errorf("Expected message content in JSON format, got: %s", notificationMsg)
+		}
+	})
 }

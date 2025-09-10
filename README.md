@@ -6,9 +6,11 @@ A high-performance Go service that bridges PostgreSQL `NOTIFY` messages to web c
 
 - **Real-time Communication**: Instantly forward PostgreSQL notifications to web clients
 - **Server-Sent Events**: Standards-based SSE implementation with automatic reconnection
+- **Multi-Topic Support**: Subscribe to multiple UUID topics simultaneously with automatic multiplexing
+- **Consistent JSON Format**: All responses use the same JSON structure for easy parsing
 - **UUID-based Topics**: Secure topic isolation using UUID validation
 - **Graceful Shutdown**: Clean resource management and connection handling
-- **Web Interface**: Built-in HTML interface for testing and monitoring
+- **Web Interface**: Built-in HTML interface for testing single and multiple topics
 - **High Concurrency**: Efficient handling of multiple clients and topics
 - **Automatic Cleanup**: Smart resource management when clients disconnect
 - **Docker Support**: Easy deployment with containerization
@@ -78,11 +80,14 @@ go run main.go
 ### GET /
 Web interface for testing and monitoring connections.
 
-### GET /subscribe?topic={uuid}
-Server-Sent Events endpoint for subscribing to notifications.
+### GET /subscribe?topics={uuid1,uuid2,...}
+Server-Sent Events endpoint for subscribing to single or multiple notification topics.
 
 **Parameters:**
-- `topic` (required): Valid UUID identifying the notification channel
+- `topics` (required): Single UUID or comma-separated list of valid UUIDs
+
+**Response Format:**
+- All responses use consistent JSON format with topic identification
 
 **Response Headers:**
 - `Content-Type: text/event-stream`
@@ -90,9 +95,22 @@ Server-Sent Events endpoint for subscribing to notifications.
 - `Connection: keep-alive`
 - `Access-Control-Allow-Origin: *`
 
-**Example:**
+**Examples:**
 ```bash
-curl -N "http://localhost:8080/subscribe?topic=550e8400-e29b-41d4-a716-446655440000"
+# Single topic
+curl -N "http://localhost:8080/subscribe?topics=550e8400-e29b-41d4-a716-446655440000"
+
+# Multiple topics
+curl -N "http://localhost:8080/subscribe?topics=550e8400-e29b-41d4-a716-446655440000,6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+
+# Spaces are automatically trimmed
+curl -N "http://localhost:8080/subscribe?topics=uuid1, uuid2, uuid3"
+```
+
+**Response Format:**
+```javascript
+// All responses use consistent JSON format
+data: {"topic":"550e8400-e29b-41d4-a716-446655440000","message":"yo"}
 ```
 
 ## 💾 Database Usage
@@ -137,9 +155,10 @@ NOTIFY "550e8400-e29b-41d4-a716-446655440000", 'Hello from PostgreSQL!';
 
 ### JavaScript/Browser
 
+#### Single Topic Subscription
 ```javascript
 const uuid = '550e8400-e29b-41d4-a716-446655440000';
-const eventSource = new EventSource(`/subscribe?topic=${uuid}`);
+const eventSource = new EventSource(`/subscribe?topics=${uuid}`);
 
 eventSource.onmessage = function(event) {
     console.log('Received:', event.data);
@@ -155,24 +174,143 @@ eventSource.onerror = function(event) {
 // eventSource.close();
 ```
 
+#### Multiple Topics Subscription
+```javascript
+const topics = [
+    '550e8400-e29b-41d4-a716-446655440000',
+    '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
+    'f47ac10b-58cc-4372-a567-0e02b2c3d479'
+];
+const eventSource = new EventSource(`/subscribe?topics=${topics.join(',')}`);
+
+eventSource.onmessage = function(event) {
+    try {
+        // Parse JSON format (used for all responses)
+        const data = JSON.parse(event.data);
+        console.log(`Message from ${data.topic}:`, data.message);
+        
+        // Handle different topics
+        switch(data.topic) {
+            case topics[0]:
+                handleUserNotification(data.message);
+                break;
+            case topics[1]:
+                handleOrderUpdate(data.message);
+                break;
+            case topics[2]:
+                handleSystemAlert(data.message);
+                break;
+        }
+    } catch (e) {
+        console.error('Failed to parse message:', event.data);
+    }
+};
+
+function handleUserNotification(message) {
+    // Handle user-specific notifications
+}
+
+function handleOrderUpdate(message) {
+    // Handle order updates
+}
+
+function handleSystemAlert(message) {
+    // Handle system alerts
+}
+```
+
 ### Node.js
 
+#### Single Topic
 ```javascript
 const EventSource = require('eventsource');
 
 const uuid = '550e8400-e29b-41d4-a716-446655440000';
-const eventSource = new EventSource(`http://localhost:8080/subscribe?topic=${uuid}`);
+const eventSource = new EventSource(`http://localhost:8080/subscribe?topics=${uuid}`);
 
 eventSource.onmessage = function(event) {
     console.log('Received:', event.data);
 };
 ```
 
+#### Multiple Topics
+```javascript
+const EventSource = require('eventsource');
+
+const topics = [
+    '550e8400-e29b-41d4-a716-446655440000',
+    '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
+];
+const eventSource = new EventSource(
+    `http://localhost:8080/subscribe?topics=${topics.join(',')}`
+);
+
+eventSource.onmessage = function(event) {
+    try {
+        const data = JSON.parse(event.data);
+        console.log(`[${data.topic}] ${data.message}`);
+    } catch (e) {
+        console.error('Failed to parse message:', event.data);
+    }
+};
+```
+
 ### cURL
 
 ```bash
-# Subscribe to notifications
-curl -N "http://localhost:8080/subscribe?topic=550e8400-e29b-41d4-a716-446655440000"
+# Single topic subscription
+curl -N "http://localhost:8080/subscribe?topics=550e8400-e29b-41d4-a716-446655440000"
+
+# Multiple topics subscription
+curl -N "http://localhost:8080/subscribe?topics=550e8400-e29b-41d4-a716-446655440000,6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+```
+
+## 🎯 Multi-Topic Use Cases
+
+The multi-topic subscription feature is perfect for applications that need to monitor multiple related entities simultaneously:
+
+### **Dashboard Applications**
+```javascript
+// Monitor user activity, system health, and order updates in one connection
+const dashboardTopics = [
+    'user-activity-feed',     // User login/logout events
+    'system-health-alerts',   // Server status changes
+    'order-processing-queue'  // New orders and updates
+];
+const eventSource = new EventSource(`/subscribe?topics=${dashboardTopics.join(',')}`);
+```
+
+### **Real-time Notifications**
+```javascript
+// Subscribe to all notification types for a user
+const userNotifications = [
+    `user-${userId}-messages`,     // Direct messages
+    `user-${userId}-alerts`,       // System alerts
+    `user-${userId}-updates`       // Profile/settings updates
+];
+const eventSource = new EventSource(`/subscribe?topics=${userNotifications.join(',')}`);
+```
+
+### **Multi-tenant Applications**
+```javascript
+// Monitor multiple tenant databases
+const tenantTopics = [
+    'tenant-a-events',
+    'tenant-b-events', 
+    'tenant-c-events'
+];
+const eventSource = new EventSource(`/subscribe?topics=${tenantTopics.join(',')}`);
+```
+
+### **Microservices Communication**
+```javascript
+// Listen to events from multiple services
+const serviceTopics = [
+    'payment-service-events',
+    'inventory-service-events',
+    'notification-service-events'
+];
+const eventSource = new EventSource(`/subscribe?topics=${serviceTopics.join(',')}`);
 ```
 
 ## 🐳 Docker Deployment

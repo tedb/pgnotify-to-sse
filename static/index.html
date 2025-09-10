@@ -55,12 +55,18 @@
     <h1>Postgres Notification Subscriber</h1>
     <div class="container">
         <div>
-            <input type="text" id="uuid" placeholder="Enter UUID to subscribe to...">
+            <input type="text" id="uuid" placeholder="Enter UUID(s) - comma-separated for multiple topics">
             <button onclick="subscribe()">Subscribe</button>
+            <button onclick="clearMessages()" style="background-color: #f44336;">Clear</button>
         </div>
         <div class="status" id="status">Not connected</div>
         <h3>Messages:</h3>
         <div id="messages"></div>
+        <div style="margin-top: 15px; font-size: 12px; color: #666;">
+            <strong>Examples:</strong><br>
+            Single topic: <code>550e8400-e29b-41d4-a716-446655440000</code><br>
+            Multiple topics: <code>uuid1, uuid2, uuid3</code>
+        </div>
     </div>
 
     <script>
@@ -71,24 +77,45 @@
                 eventSource.close();
             }
 
-            const uuid = document.getElementById('uuid').value.trim();
-            if (!uuid) {
-                alert('Please enter a UUID');
+            const uuidInput = document.getElementById('uuid').value.trim();
+            if (!uuidInput) {
+                alert('Please enter at least one UUID');
                 return;
             }
 
             const statusEl = document.getElementById('status');
             const messagesEl = document.getElementById('messages');
 
+            // Parse UUIDs (comma-separated)
+            const uuids = uuidInput.split(',').map(u => u.trim()).filter(u => u);
+            
+            if (uuids.length === 0) {
+                alert('Please enter at least one valid UUID');
+                return;
+            }
+
             try {
-                eventSource = new EventSource('/subscribe?topic=' + encodeURIComponent(uuid));
+                // Always use topics parameter (supports both single and multiple)
+                const url = '/subscribe?topics=' + encodeURIComponent(uuids.join(','));
+                    
+                eventSource = new EventSource(url);
                 
-                statusEl.textContent = 'Connected and listening for messages...';
+                const topicText = uuids.length === 1 ? 'topic' : `${uuids.length} topics`;
+                statusEl.textContent = `Connected and listening for messages on ${topicText}...`;
                 
                 eventSource.onmessage = function(event) {
                     const messageEl = document.createElement('div');
                     messageEl.className = 'message';
-                    messageEl.textContent = 'Received: ' + event.data;
+                    
+                    try {
+                        // Parse JSON format (used for all responses now)
+                        const data = JSON.parse(event.data);
+                        messageEl.innerHTML = `<strong>[${data.topic}]</strong> ${data.message}`;
+                    } catch (e) {
+                        // Fallback for unexpected format
+                        messageEl.textContent = 'Received (unexpected format): ' + event.data;
+                    }
+                    
                     messagesEl.insertBefore(messageEl, messagesEl.firstChild);
                 };
 
@@ -98,6 +125,10 @@
             } catch (err) {
                 statusEl.textContent = 'Error: ' + err.message;
             }
+        }
+
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
         }
     </script>
 </body>

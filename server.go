@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -64,25 +63,39 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	w.Write(indexHTML)
 }
 
-// handleSubscribe handles SSE subscriptions
+// handleSubscribe handles SSE subscriptions for single or multiple topics
 func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	log.Printf("New SSE connection request from %s", r.RemoteAddr)
 
-	topicStr := r.URL.Query().Get("topic")
-	if topicStr == "" {
-		log.Printf("Rejected connection from %s: missing topic parameter", r.RemoteAddr)
-		http.Error(w, "topic parameter is required", http.StatusBadRequest)
+	// Get topics parameter (supports both single and comma-separated multiple topics)
+	topicsParam := r.URL.Query().Get("topics")
+	if topicsParam == "" {
+		log.Printf("Rejected connection from %s: missing topics parameter", r.RemoteAddr)
+		http.Error(w, "topics parameter is required", http.StatusBadRequest)
 		return
 	}
 
-	// Validate UUID
-	if _, err := uuid.Parse(topicStr); err != nil {
-		log.Printf("Rejected connection from %s: invalid UUID format: %s", r.RemoteAddr, topicStr)
-		http.Error(w, "invalid UUID format", http.StatusBadRequest)
-		return
+	// Parse comma-separated topics
+	topics := strings.Split(topicsParam, ",")
+	for i, topic := range topics {
+		topics[i] = strings.TrimSpace(topic)
 	}
 
-	log.Printf("Valid subscription request from %s for topic %s", r.RemoteAddr, topicStr)
+	// Validate all UUIDs
+	for _, topic := range topics {
+		if topic == "" {
+			log.Printf("Rejected connection from %s: empty topic in list", r.RemoteAddr)
+			http.Error(w, "empty topic not allowed", http.StatusBadRequest)
+			return
+		}
+		if _, err := uuid.Parse(topic); err != nil {
+			log.Printf("Rejected connection from %s: invalid UUID format: %s", r.RemoteAddr, topic)
+			http.Error(w, fmt.Sprintf("invalid UUID format: %s", topic), http.StatusBadRequest)
+			return
+		}
+	}
+
+	log.Printf("Valid subscription request from %s for %d topic(s): %v", r.RemoteAddr, len(topics), topics)
 
 	// Set headers for SSE
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -90,18 +103,50 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// Subscribe to messages
-	messageCh := s.broker.Subscribe(topicStr)
-	defer s.broker.Unsubscribe(topicStr, messageCh)
+	// Subscribe to all topics
+	messageChannels := make([]chan string, len(topics))
+	for i, topic := range topics {
+		messageChannels[i] = s.broker.Subscribe(topic)
+	}
+
+	// Cleanup function
+	defer func() {
+		for i, topic := range topics {
+			s.broker.Unsubscribe(topic, messageChannels[i])
+		}
+	}()
 
 	// Get context from request for client disconnect
 	ctx := r.Context()
 
-	// Send messages to client
+	// Create a multiplexed channel to receive messages from all subscriptions
+	multiplexCh := make(chan struct {
+		topic   string
+		message string
+	}, 100)
+
+	// Start goroutines to forward messages from each topic
+	for i, ch := range messageChannels {
+		go func(topicName string, messageCh chan string) {
+			for msg := range messageCh {
+				select {
+				case multiplexCh <- struct {
+					topic   string
+					message string
+				}{topicName, msg}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}(topics[i], ch)
+	}
+
+	// Send messages to client (always in JSON format)
 	for {
 		select {
-		case msg := <-messageCh:
-			fmt.Fprintf(w, "data: %s\n\n", msg)
+		case msgData := <-multiplexCh:
+			// Always include topic info in JSON format
+			fmt.Fprintf(w, "data: {\"topic\":\"%s\",\"message\":\"%s\"}\n\n", msgData.topic, msgData.message)
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
