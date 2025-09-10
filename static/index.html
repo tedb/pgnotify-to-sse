@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Postgres Notification Subscriber</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+        .container {
+            background-color: #f5f5f5;
+            border-radius: 5px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+        #messages {
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            padding: 10px;
+            margin-top: 10px;
+            min-height: 100px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .message {
+            padding: 5px;
+            border-bottom: 1px solid #eee;
+        }
+        input[type="text"] {
+            padding: 5px;
+            width: 300px;
+            margin-right: 10px;
+        }
+        button {
+            padding: 5px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .status {
+            margin-top: 10px;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <h1>Postgres Notification Subscriber</h1>
+    <div class="container">
+        <div>
+            <input type="text" id="uuid" placeholder="Enter UUID to subscribe to...">
+            <button onclick="subscribe()">Subscribe</button>
+        </div>
+        <div class="status" id="status">Not connected</div>
+        <h3>Messages:</h3>
+        <div id="messages"></div>
+    </div>
+
+    <script>
+        let eventSource = null;
+
+        function subscribe() {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            const uuid = document.getElementById('uuid').value.trim();
+            if (!uuid) {
+                alert('Please enter a UUID');
+                return;
+            }
+
+            const statusEl = document.getElementById('status');
+            const messagesEl = document.getElementById('messages');
+
+            try {
+                eventSource = new EventSource('/subscribe?topic=' + encodeURIComponent(uuid));
+                
+                statusEl.textContent = 'Connected and listening for messages...';
+                
+                eventSource.onmessage = function(event) {
+                    const messageEl = document.createElement('div');
+                    messageEl.className = 'message';
+                    messageEl.textContent = 'Received: ' + event.data;
+                    messagesEl.insertBefore(messageEl, messagesEl.firstChild);
+                };
+
+                eventSource.onerror = function() {
+                    statusEl.textContent = 'Connection error. Reconnecting...';
+                };
+            } catch (err) {
+                statusEl.textContent = 'Error: ' + err.message;
+            }
+        }
+    </script>
+</body>
+</html>
