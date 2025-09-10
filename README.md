@@ -1,7 +1,7 @@
 # PostgreSQL Notification to SSE Bridge
 
-[![Tests](https://github.com/USERNAME/pgnotify-to-sse/workflows/Tests/badge.svg)](https://github.com/USERNAME/pgnotify-to-sse/actions)
-[![Go Report Card](https://goreportcard.com/badge/github.com/USERNAME/pgnotify-to-sse)](https://goreportcard.com/report/github.com/USERNAME/pgnotify-to-sse)
+[![Tests](https://github.com/tedb/pgnotify-to-sse/workflows/Tests/badge.svg)](https://github.com/tedb/pgnotify-to-sse/actions)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tedb/pgnotify-to-sse)](https://goreportcard.com/report/github.com/tedb/pgnotify-to-sse)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A high-performance Go service that bridges PostgreSQL `NOTIFY` messages to web clients using Server-Sent Events (SSE). This enables real-time communication between your database and web applications with minimal latency and automatic reconnection handling.
