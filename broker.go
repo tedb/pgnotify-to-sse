@@ -30,6 +30,8 @@ func NewBroker(db *sql.DB, listener *pq.Listener) *Broker {
 }
 
 func (b *Broker) Subscribe(topic string) chan string {
+	// Sanitize topic to lowercase for consistency
+	topic = strings.ToLower(strings.TrimSpace(topic))
 	log.Printf("Subscribing to topic: %s", topic)
 	ch := make(chan string, 100) // Increased buffer to handle rapid notifications
 	b.mu.Lock()
@@ -56,6 +58,8 @@ func (b *Broker) Subscribe(topic string) chan string {
 }
 
 func (b *Broker) Unsubscribe(topic string, ch chan string) {
+	// Sanitize topic to lowercase for consistency
+	topic = strings.ToLower(strings.TrimSpace(topic))
 	log.Printf("Unsubscribing from topic: %s", topic)
 
 	// Close channel first to prevent deadlock
@@ -93,6 +97,8 @@ func (b *Broker) Unsubscribe(topic string, ch chan string) {
 }
 
 func (b *Broker) Broadcast(topic string) {
+	// Sanitize topic to lowercase for consistency
+	topic = strings.ToLower(strings.TrimSpace(topic))
 	log.Printf("Broadcasting message to topic: %s", topic)
 
 	// Create a copy of channels to avoid race condition

@@ -86,8 +86,8 @@
             const statusEl = document.getElementById('status');
             const messagesEl = document.getElementById('messages');
 
-            // Parse UUIDs (comma-separated)
-            const uuids = uuidInput.split(',').map(u => u.trim()).filter(u => u);
+            // Parse UUIDs (comma-separated) and convert to lowercase
+            const uuids = uuidInput.split(',').map(u => u.trim().toLowerCase()).filter(u => u);
             
             if (uuids.length === 0) {
                 alert('Please enter at least one valid UUID');

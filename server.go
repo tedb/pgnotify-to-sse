@@ -75,10 +75,10 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse comma-separated topics
+	// Parse comma-separated topics and sanitize to lowercase
 	topics := strings.Split(topicsParam, ",")
 	for i, topic := range topics {
-		topics[i] = strings.TrimSpace(topic)
+		topics[i] = strings.ToLower(strings.TrimSpace(topic))
 	}
 
 	// Validate all UUIDs
